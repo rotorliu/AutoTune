@@ -11,6 +11,7 @@ from autotune.tuning.pid_tuner import PIDTuner
 from autotune.tuning.rate_tuner import RateTuner
 from autotune.acquisition.blackbox import BlackboxParser
 from autotune.utils.tuning_history import TuningHistory
+from autotune.tuning.flight_scenes import FlightScene, get_all_scenes, get_scene_preferences, get_scene_by_name
 
 
 class TuningWorker(QThread):
@@ -18,13 +19,14 @@ class TuningWorker(QThread):
     finished = Signal(dict, dict)
     error = Signal(str)
 
-    def __init__(self, data, controller, tune_pid=True, tune_rate=True, conservative=True):
+    def __init__(self, data, controller, tune_pid=True, tune_rate=True, conservative=True, scene=None):
         super().__init__()
         self.data = data
         self.controller = controller
         self.tune_pid = tune_pid
         self.tune_rate = tune_rate
         self.conservative = conservative
+        self.scene = scene
 
     def run(self):
         try:
@@ -33,7 +35,7 @@ class TuningWorker(QThread):
 
             if self.tune_pid:
                 self.progress.emit("正在分析飞行数据进行 PID 调优...", 10)
-                tuner = PIDTuner(conservative=self.conservative)
+                tuner = PIDTuner(conservative=self.conservative, scene=self.scene)
                 result_pid = tuner.tune(self.data, self.controller.pid_profile)
                 self.progress.emit("PID 调优完成", 60)
 
@@ -102,7 +104,29 @@ class TuningWizard(QWidget):
 
         layout.addWidget(mode_group)
 
-        tune_group = QGroupBox("Step 2: 选择调优范围")
+        scene_group = QGroupBox("Step 2: 选择飞行场景")
+        scene_layout = QVBoxLayout(scene_group)
+
+        scene_label = QLabel("选择适合您飞行风格的场景：")
+        scene_layout.addWidget(scene_label)
+
+        self.scene_combo = QComboBox()
+        for scene in get_all_scenes():
+            prefs = get_scene_preferences(scene)
+            self.scene_combo.addItem(prefs.name, scene.value)
+        self.scene_combo.currentIndexChanged.connect(self._on_scene_changed)
+        scene_layout.addWidget(self.scene_combo)
+
+        self.scene_description = QLabel()
+        self.scene_description.setWordWrap(True)
+        self.scene_description.setStyleSheet("color: #888; font-size: 12px;")
+        scene_layout.addWidget(self.scene_description)
+
+        self._update_scene_description()
+
+        layout.addWidget(scene_group)
+
+        tune_group = QGroupBox("Step 3: 选择调优范围")
         tune_layout = QVBoxLayout(tune_group)
 
         self.tune_pid_cb = QCheckBox("PID 调优")
@@ -119,7 +143,7 @@ class TuningWizard(QWidget):
 
         layout.addWidget(tune_group)
 
-        progress_group = QGroupBox("Step 3: 执行调优")
+        progress_group = QGroupBox("Step 4: 执行调优")
         progress_layout = QVBoxLayout(progress_group)
 
         btn_layout = QHBoxLayout()
@@ -163,6 +187,20 @@ class TuningWizard(QWidget):
         is_bb = self.bb_radio.isChecked()
         self.bb_file_label.setVisible(is_bb)
         self.select_file_btn.setVisible(is_bb)
+
+    def _on_scene_changed(self, index):
+        self._update_scene_description()
+
+    def _update_scene_description(self):
+        scene_value = self.scene_combo.currentData()
+        scene = get_scene_by_name(scene_value) if scene_value else None
+        if scene:
+            prefs = get_scene_preferences(scene)
+            self.scene_description.setText(prefs.description)
+
+    def _get_selected_scene(self) -> FlightScene:
+        scene_value = self.scene_combo.currentData()
+        return get_scene_by_name(scene_value) if scene_value else None
 
     def _select_bb_file(self):
         filepath, _ = QFileDialog.getOpenFileName(
@@ -253,12 +291,14 @@ class TuningWizard(QWidget):
             for i in range(4):
                 data[f"motor_{i}"] = np.abs(np.random.randn(200)) * 500 + 1000
 
+        selected_scene = self._get_selected_scene()
         self._worker = TuningWorker(
             data,
             self.controller,
             tune_pid=self.tune_pid_cb.isChecked(),
             tune_rate=self.tune_rate_cb.isChecked(),
             conservative=self.conservative_cb.isChecked(),
+            scene=selected_scene,
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)

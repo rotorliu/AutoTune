@@ -4,6 +4,7 @@ from autotune.fc.pid import PIDProfile, PIDAxis, PIDAdvancedAxis
 from autotune.analysis.signal_processing import analyze_gyro_data
 from autotune.analysis.step_response import StepResponseMetrics, analyze_step_response
 from autotune.analysis.metrics import evaluate_flight_quality
+from autotune.tuning.flight_scenes import SceneTuningPreferences
 
 
 class TuningRule:
@@ -38,22 +39,28 @@ class RuleEngine:
         return context
 
     @staticmethod
-    def create_pid_rules() -> "RuleEngine":
+    def create_pid_rules(scene_prefs: Optional[SceneTuningPreferences] = None) -> "RuleEngine":
         engine = RuleEngine()
+
+        overshoot_threshold = scene_prefs.max_overshoot_tolerance if scene_prefs else 15.0
+        rise_time_threshold = scene_prefs.min_rise_time_ms if scene_prefs else 50.0
+        p_factor = scene_prefs.pid_p_multiplier if scene_prefs else 1.0
+        i_factor = scene_prefs.pid_i_multiplier if scene_prefs else 1.0
+        d_factor = scene_prefs.pid_d_multiplier if scene_prefs else 1.0
 
         engine.add_rule(TuningRule(
             name="high_overshoot",
-            description="Reduce P or increase D when overshoot > 15%",
-            condition_fn=lambda ctx: ctx.get("overshoot_pct", 0) > 15.0,
-            action_fn=lambda ctx: _reduce_p_or_increase_d(ctx),
+            description=f"Reduce P or increase D when overshoot > {overshoot_threshold}%",
+            condition_fn=lambda ctx, thresh=overshoot_threshold: ctx.get("overshoot_pct", 0) > thresh,
+            action_fn=lambda ctx, df=d_factor: _reduce_p_or_increase_d(ctx, d_factor=df),
             priority=10,
         ))
 
         engine.add_rule(TuningRule(
             name="slow_response",
-            description="Increase P when rise time > 50ms",
-            condition_fn=lambda ctx: ctx.get("rise_time_ms", 0) > 50.0 and ctx.get("overshoot_pct", 0) < 10.0,
-            action_fn=lambda ctx: _increase_p(ctx),
+            description=f"Increase P when rise time > {rise_time_threshold}ms",
+            condition_fn=lambda ctx, rt=rise_time_threshold, ot=overshoot_threshold: ctx.get("rise_time_ms", 0) > rt and ctx.get("overshoot_pct", 0) < ot * 0.6,
+            action_fn=lambda ctx, pf=p_factor: _increase_p(ctx, p_factor=pf),
             priority=9,
         ))
 
@@ -61,7 +68,7 @@ class RuleEngine:
             name="steady_oscillation",
             description="Reduce P or adjust D when oscillation detected",
             condition_fn=lambda ctx: ctx.get("oscillation_index", 0) > 0.5,
-            action_fn=lambda ctx: _reduce_p_or_increase_d(ctx),
+            action_fn=lambda ctx, df=d_factor: _reduce_p_or_increase_d(ctx, d_factor=df),
             priority=9,
         ))
 
@@ -69,7 +76,7 @@ class RuleEngine:
             name="high_freq_noise",
             description="Increase D when high frequency oscillation detected",
             condition_fn=lambda ctx: ctx.get("energy_high_pct", 0) > 30.0,
-            action_fn=lambda ctx: _increase_d(ctx),
+            action_fn=lambda ctx, df=d_factor: _increase_d(ctx, d_factor=df),
             priority=8,
         ))
 
@@ -78,7 +85,7 @@ class RuleEngine:
             description="Increase I for low frequency error",
             condition_fn=lambda ctx: ctx.get("energy_low_pct", 0) > 40.0
                                      and ctx.get("steady_state_error_pct", 0) > 3.0,
-            action_fn=lambda ctx: _increase_i(ctx),
+            action_fn=lambda ctx, ifac=i_factor: _increase_i(ctx, i_factor=ifac),
             priority=7,
         ))
 
@@ -86,7 +93,7 @@ class RuleEngine:
             name="steady_state_error",
             description="Increase I when steady state error > 5%",
             condition_fn=lambda ctx: ctx.get("steady_state_error_pct", 0) > 5.0,
-            action_fn=lambda ctx: _increase_i(ctx),
+            action_fn=lambda ctx, ifac=i_factor: _increase_i(ctx, i_factor=ifac),
             priority=7,
         ))
 
@@ -94,7 +101,7 @@ class RuleEngine:
             name="motor_saturation",
             description="Reduce P when motor saturation detected",
             condition_fn=lambda ctx: ctx.get("motor_saturation_pct", 0) > 10.0,
-            action_fn=lambda ctx: _reduce_p(ctx),
+            action_fn=lambda ctx, pf=p_factor: _reduce_p(ctx, p_factor=pf),
             priority=10,
         ))
 
@@ -103,30 +110,30 @@ class RuleEngine:
             description="Reduce D if oscillation index too high despite D being high",
             condition_fn=lambda ctx: (ctx.get("oscillation_index", 0) > 0.6
                                       and ctx.get("current_d", 0) > ctx.get("current_p", 0) * 0.5),
-            action_fn=lambda ctx: _reduce_d(ctx),
+            action_fn=lambda ctx, df=d_factor: _reduce_d(ctx, d_factor=df),
             priority=8,
         ))
 
         return engine
 
 
-def _reduce_p(context: dict):
-    factor = 0.85
+def _reduce_p(context: dict, p_factor: float = 1.0):
+    factor = 0.85 * p_factor
     context["new_p"] = context.get("current_p", 40.0) * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Reduce P: {context.get('current_p', 40.0):.1f} -> {context['new_p']:.1f}")
 
 
-def _increase_p(context: dict):
-    factor = 1.15
+def _increase_p(context: dict, p_factor: float = 1.0):
+    factor = 1.15 * p_factor
     context["new_p"] = context.get("current_p", 40.0) * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Increase P: {context.get('current_p', 40.0):.1f} -> {context['new_p']:.1f}")
 
 
-def _reduce_p_or_increase_d(context: dict):
+def _reduce_p_or_increase_d(context: dict, d_factor: float = 1.0):
     p = context.get("current_p", 40.0)
     d = context.get("current_d", 25.0)
     overshoot = context.get("overshoot_pct", 0)
@@ -134,35 +141,35 @@ def _reduce_p_or_increase_d(context: dict):
     if overshoot > 25.0 or d > p * 0.6:
         _reduce_p(context)
     else:
-        _increase_d(context)
+        _increase_d(context, d_factor=d_factor)
 
 
-def _increase_d(context: dict):
-    factor = 1.2
+def _increase_d(context: dict, d_factor: float = 1.0):
+    factor = 1.2 * d_factor
     context["new_d"] = context.get("current_d", 25.0) * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Increase D: {context.get('current_d', 25.0):.1f} -> {context['new_d']:.1f}")
 
 
-def _reduce_d(context: dict):
-    factor = 0.8
+def _reduce_d(context: dict, d_factor: float = 1.0):
+    factor = 0.8 / d_factor if d_factor > 0 else 0.8
     context["new_d"] = context.get("current_d", 25.0) * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Reduce D: {context.get('current_d', 25.0):.1f} -> {context['new_d']:.1f}")
 
 
-def _increase_i(context: dict):
-    factor = 1.2
+def _increase_i(context: dict, i_factor: float = 1.0):
+    factor = 1.2 * i_factor
     context["new_i"] = context.get("current_i", 60.0) * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Increase I: {context.get('current_i', 60.0):.1f} -> {context['new_i']:.1f}")
 
 
-def _reduce_i(context: dict):
-    factor = 0.85
+def _reduce_i(context: dict, i_factor: float = 1.0):
+    factor = 0.85 / i_factor if i_factor > 0 else 0.85
     context["new_i"] = context.get("current_i", 60.0) * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []

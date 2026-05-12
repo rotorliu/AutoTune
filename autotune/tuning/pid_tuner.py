@@ -7,6 +7,7 @@ from autotune.analysis.step_response import analyze_step_response, extract_step_
 from autotune.analysis.signal_processing import analyze_gyro_data
 from autotune.analysis.metrics import evaluate_flight_quality
 from autotune.tuning.rules import RuleEngine
+from autotune.tuning.flight_scenes import FlightScene, SceneTuningPreferences, get_scene_preferences
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +25,18 @@ class PIDTuner:
         self,
         sample_rate: float = DEFAULT_SAMPLE_RATE,
         conservative: bool = True,
+        scene: Optional[FlightScene] = None,
     ):
         self.sample_rate = sample_rate
         self.conservative = conservative
-        self.rule_engine = RuleEngine.create_pid_rules()
-        self._max_change_pct = 20.0 if conservative else PID_CHANGE_LIMIT_PCT
+        self.scene = scene
+        self.scene_prefs = get_scene_preferences(scene) if scene else None
+        self.rule_engine = RuleEngine.create_pid_rules(self.scene_prefs)
+        base_change_limit = 20.0 if conservative else PID_CHANGE_LIMIT_PCT
+        if self.scene_prefs:
+            self._max_change_pct = base_change_limit * self.scene_prefs.aggressiveness
+        else:
+            self._max_change_pct = base_change_limit
         self._progress_callback: Optional[Callable] = None
 
     def set_progress_callback(self, callback: Callable):
