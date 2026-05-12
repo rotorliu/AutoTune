@@ -10,6 +10,7 @@ import numpy as np
 from autotune.tuning.pid_tuner import PIDTuner
 from autotune.tuning.rate_tuner import RateTuner
 from autotune.acquisition.blackbox import BlackboxParser
+from autotune.utils.tuning_history import TuningHistory
 
 
 class TuningWorker(QThread):
@@ -64,6 +65,7 @@ class TuningWizard(QWidget):
         self._telemetry_data: list[dict] = []
         self._tuned_pid = None
         self._tuned_rate = None
+        self._history = TuningHistory()
         self._init_ui()
 
     def _init_ui(self):
@@ -297,6 +299,18 @@ class TuningWizard(QWidget):
 
         self.result_text.setText(result_text)
         self._log("调优完成！请查看结果并决定是否应用到飞控")
+
+        from autotune.fc.pid import PIDProfile
+        from autotune.fc.rate import RateProfile
+        pid_after = PIDProfile.from_dict(pid_result) if pid_result else None
+        rate_after = RateProfile.from_dict(rate_result) if rate_result else None
+        self._history.add_entry(
+            pid_before=self.controller.pid_profile,
+            pid_after=pid_after,
+            rate_before=self.controller.rate_profile,
+            rate_after=rate_after,
+            notes="Auto-tuning result"
+        )
 
     def _on_error(self, message: str):
         self.start_btn.setEnabled(True)

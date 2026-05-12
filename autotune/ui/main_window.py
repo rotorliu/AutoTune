@@ -1,3 +1,4 @@
+from collections import deque
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
@@ -25,7 +26,7 @@ class MainWindow(QWidget):
         self.transport = MSPTransport()
         self.controller = FCController(self.transport)
         self._telemetry_timer: QTimer | None = None
-        self._telemetry_buffer: list[dict] = []
+        self._telemetry_buffer: deque[dict] = deque(maxlen=10000)
 
         self._init_ui()
         self._apply_style()
@@ -97,12 +98,9 @@ class MainWindow(QWidget):
         try:
             data = self.controller.read_telemetry_snapshot()
             self._telemetry_buffer.append(data)
-            if len(self._telemetry_buffer) > 10000:
-                self._telemetry_buffer = self._telemetry_buffer[-5000:]
-
             self.chart_panel.update_data(data)
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Telemetry poll error: {e}")
 
     def _on_pid_updated(self, profile_dict: dict):
         self.pid_panel.load_from_dict(profile_dict)

@@ -45,6 +45,17 @@ class PIDTuner:
     ) -> PIDProfile:
         tuned = initial_profile.clone()
 
+        gyro_x = data.get("gyro_x", np.array([]))
+        gyro_y = data.get("gyro_y", np.array([]))
+        gyro_z = data.get("gyro_z", np.array([]))
+        setpoint_x = data.get("setpoint_x", np.array([]))
+        setpoint_y = data.get("setpoint_y", np.array([]))
+        setpoint_z = data.get("setpoint_z", np.array([]))
+        motor_0 = data.get("motor_0", np.array([]))
+        motor_1 = data.get("motor_1", np.array([]))
+        motor_2 = data.get("motor_2", np.array([]))
+        motor_3 = data.get("motor_3", np.array([]))
+
         for axis_idx, (axis_name, gyro_key, sp_key) in enumerate(
             zip(self.AXES, self.GYRO_KEYS, self.SETPOINT_KEYS)
         ):
@@ -64,17 +75,6 @@ class PIDTuner:
             gyro_analysis = analyze_gyro_data(gyro, self.sample_rate)
             step_metrics = analyze_step_response(setpoint, gyro, sample_rate=self.sample_rate)
 
-            motor_0 = data.get("motor_0", np.zeros_like(gyro))
-            motor_1 = data.get("motor_1", np.zeros_like(gyro))
-            motor_2 = data.get("motor_2", np.zeros_like(gyro))
-            motor_3 = data.get("motor_3", np.zeros_like(gyro))
-            gyro_x = data.get("gyro_x", np.zeros_like(gyro))
-            gyro_y = data.get("gyro_y", np.zeros_like(gyro))
-            gyro_z = data.get("gyro_z", np.zeros_like(gyro))
-            setpoint_x = data.get("setpoint_x", np.zeros_like(gyro))
-            setpoint_y = data.get("setpoint_y", np.zeros_like(gyro))
-            setpoint_z = data.get("setpoint_z", np.zeros_like(gyro))
-            
             quality = evaluate_flight_quality(
                 gyro_x, gyro_y, gyro_z,
                 motor_0, motor_1, motor_2, motor_3,

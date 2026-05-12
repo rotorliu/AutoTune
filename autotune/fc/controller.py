@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import os
 import logging
+import struct
 from datetime import datetime
 from typing import Optional
 

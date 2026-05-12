@@ -1,9 +1,12 @@
 import time
 import logging
+import struct
 from typing import Optional, List
 
 import serial
 import serial.tools.list_ports
+
+from PySide6.QtCore import QObject, Signal
 
 from autotune.msp.commands import MSPCommand, MSPVersion
 from autotune.msp.protocol import (
@@ -33,8 +36,11 @@ BETAFLIGHT_VID_PID_PAIRS = [
 ]
 
 
-class MSPTransport:
+class MSPTransport(QObject):
+    connection_changed = Signal(bool)
+
     def __init__(self, version: MSPVersion = MSPVersion.V1):
+        super().__init__()
         self.protocol: MSPProtocol = create_protocol(version)
         self.version = version
         self.serial: Optional[serial.Serial] = None
@@ -113,6 +119,7 @@ class MSPTransport:
             self._buffer = bytearray()
             time.sleep(0.5)
             logger.info(f"Connected to {port} at {baudrate} baud")
+            self.connection_changed.emit(True)
             return True
         except serial.SerialException as e:
             logger.error(f"Failed to connect to {port}: {e}")
@@ -121,12 +128,15 @@ class MSPTransport:
             return False
 
     def disconnect(self):
+        was_connected = self._connected
         if self.serial and self.serial.is_open:
             self.serial.close()
         self._connected = False
         self.serial = None
         self._buffer = bytearray()
         logger.info("Disconnected from flight controller")
+        if was_connected:
+            self.connection_changed.emit(False)
 
     def send_command(
         self,
