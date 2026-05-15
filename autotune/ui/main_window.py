@@ -85,7 +85,7 @@ class MainWindow(QWidget):
         if self._telemetry_timer is None:
             self._telemetry_timer = QTimer()
             self._telemetry_timer.timeout.connect(self._poll_telemetry)
-            self._telemetry_timer.start(50)
+            self._telemetry_timer.start(100)
 
     def _stop_telemetry(self):
         if self._telemetry_timer is not None:
