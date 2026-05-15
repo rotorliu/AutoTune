@@ -48,6 +48,37 @@ class MSPTransport(QObject):
         self._connected = False
         self._port_name = ""
 
+    def _detect_protocol(self) -> MSPVersion:
+        for version_attempt in [MSPVersion.V1, MSPVersion.V2]:
+            test_protocol = create_protocol(version_attempt)
+            test_cmd = test_protocol.pack(MSPCommand.MSP_API_VERSION)
+
+            try:
+                self.serial.reset_input_buffer()
+                self.serial.write(test_cmd)
+                self.serial.flush()
+
+                response = bytearray()
+                start_time = time.time()
+
+                while (time.time() - start_time) < 0.5:
+                    waiting = self.serial.in_waiting
+                    if waiting > 0:
+                        chunk = self.serial.read(min(waiting, 256))
+                        response.extend(chunk)
+
+                    result = test_protocol.unpack_header(bytes(response))
+                    if result is not None:
+                        logger.info(f"Detected MSP version: {version_attempt.name}")
+                        return version_attempt
+
+                    time.sleep(0.01)
+            except Exception:
+                continue
+
+        logger.warning("Could not detect MSP version, defaulting to V1")
+        return MSPVersion.V1
+
     @property
     def is_connected(self) -> bool:
         return self._connected and self.serial is not None and self.serial.is_open
@@ -118,7 +149,10 @@ class MSPTransport(QObject):
             self._connected = True
             self._buffer = bytearray()
             time.sleep(0.5)
-            logger.info(f"Connected to {port} at {baudrate} baud")
+            detected_version = self._detect_protocol()
+            self.protocol = create_protocol(detected_version)
+            self.version = detected_version
+            logger.info(f"Connected to {port} at {baudrate} baud, MSP version: {detected_version.name}")
             self.connection_changed.emit(True)
             return True
         except serial.SerialException as e:
@@ -210,14 +244,14 @@ class MSPTransport(QObject):
 
     def read_fc_variant(self) -> str:
         payload = self.send_command(MSPCommand.MSP_FC_VARIANT)
-        return payload.decode("utf-8", errors="ignore").strip("\x00")
+        return payload.decode("ascii", errors="replace").strip("\x00")
 
     def read_fc_version(self) -> dict:
         payload = self.send_command(MSPCommand.MSP_FC_VERSION)
         parts = payload.split(b"\x00")
         return {
-            "version": parts[0].decode("utf-8", errors="ignore") if len(parts) > 0 else "",
-            "build_info": parts[1].decode("utf-8", errors="ignore") if len(parts) > 1 else "",
+            "version": parts[0].decode("ascii", errors="replace") if len(parts) > 0 else "",
+            "build_info": parts[1].decode("ascii", errors="replace") if len(parts) > 1 else "",
         }
 
     def read_board_info(self) -> dict:
@@ -225,7 +259,7 @@ class MSPTransport(QObject):
         if len(payload) < 3:
             return {}
         return {
-            "board_identifier": payload[:4].decode("utf-8", errors="ignore"),
+            "board_identifier": payload[:4].decode("ascii", errors="replace"),
             "hardware_revision": int.from_bytes(payload[4:6], "little", signed=False) if len(payload) > 5 else 0,
         }
 
@@ -233,9 +267,9 @@ class MSPTransport(QObject):
         payload = self.send_command(MSPCommand.MSP_BUILD_INFO)
         parts = payload.split(b"\x00")
         return {
-            "build_date": parts[0].decode("utf-8", errors="ignore") if len(parts) > 0 else "",
-            "build_time": parts[1].decode("utf-8", errors="ignore") if len(parts) > 1 else "",
-            "target": parts[2].decode("utf-8", errors="ignore") if len(parts) > 2 else "",
+            "build_date": parts[0].decode("ascii", errors="replace") if len(parts) > 0 else "",
+            "build_time": parts[1].decode("ascii", errors="replace") if len(parts) > 1 else "",
+            "target": parts[2].decode("ascii", errors="replace") if len(parts) > 2 else "",
         }
 
     @staticmethod
