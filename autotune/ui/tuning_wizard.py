@@ -252,6 +252,40 @@ class TuningWizard(QWidget):
 
             self._log(f"成功解析 {len(channels.get('gyro_x', []))} 个样本")
 
+            # Ensure PID profile is initialized from FC if connected,
+            # otherwise use defaults that allow the tuner to work
+            if self.controller.is_connected:
+                try:
+                    self.controller.read_pid_profile()
+                    self._log("已从飞控读取 PID 配置")
+                except Exception:
+                    pass
+
+            # If PID profile still has all zeros, use sensible defaults
+            pid = self.controller.pid_profile
+            all_zero = True
+            for ax_idx in range(3):
+                axis = pid.get_axis(ax_idx)
+                if axis.p > 0.5 or axis.i > 0.5 or axis.d > 0.5:
+                    all_zero = False
+                    break
+
+            if all_zero:
+                self._log("飞控 PID 配置未获取，使用默认起始值")
+                # Use defaults that allow the tuner to work
+                from autotune.fc.pid import PIDProfile
+                default_pid = PIDProfile()
+                default_pid.roll_pid.p = 40.0
+                default_pid.roll_pid.i = 60.0
+                default_pid.roll_pid.d = 20.0
+                default_pid.pitch_pid.p = 42.0
+                default_pid.pitch_pid.i = 62.0
+                default_pid.pitch_pid.d = 22.0
+                default_pid.yaw_pid.p = 45.0
+                default_pid.yaw_pid.i = 80.0
+                default_pid.yaw_pid.d = 0.0
+                self.controller._pid_profile = default_pid
+
             self._run_tuning(channels)
 
         except Exception as e:

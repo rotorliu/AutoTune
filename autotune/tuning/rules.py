@@ -119,7 +119,10 @@ class RuleEngine:
 
 def _reduce_p(context: dict, p_factor: float = 1.0):
     factor = 0.85 * p_factor
-    context["new_p"] = context.get("current_p", 40.0) * factor
+    current = context.get("current_p", 40.0)
+    if current < 0.5:
+        current = 40.0
+    context["new_p"] = current * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Reduce P: {context.get('current_p', 40.0):.1f} -> {context['new_p']:.1f}")
@@ -127,7 +130,10 @@ def _reduce_p(context: dict, p_factor: float = 1.0):
 
 def _increase_p(context: dict, p_factor: float = 1.0):
     factor = 1.15 * p_factor
-    context["new_p"] = context.get("current_p", 40.0) * factor
+    current = context.get("current_p", 40.0)
+    if current < 0.5:
+        current = 40.0
+    context["new_p"] = current * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Increase P: {context.get('current_p', 40.0):.1f} -> {context['new_p']:.1f}")
@@ -135,7 +141,11 @@ def _increase_p(context: dict, p_factor: float = 1.0):
 
 def _reduce_p_or_increase_d(context: dict, d_factor: float = 1.0):
     p = context.get("current_p", 40.0)
+    if p < 0.5:
+        p = 40.0
     d = context.get("current_d", 25.0)
+    if d < 0.5:
+        d = 25.0
     overshoot = context.get("overshoot_pct", 0)
 
     if overshoot > 25.0 or d > p * 0.6:
@@ -146,7 +156,10 @@ def _reduce_p_or_increase_d(context: dict, d_factor: float = 1.0):
 
 def _increase_d(context: dict, d_factor: float = 1.0):
     factor = 1.2 * d_factor
-    context["new_d"] = context.get("current_d", 25.0) * factor
+    current = context.get("current_d", 25.0)
+    if current < 0.5:
+        current = 25.0
+    context["new_d"] = current * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Increase D: {context.get('current_d', 25.0):.1f} -> {context['new_d']:.1f}")
@@ -154,7 +167,10 @@ def _increase_d(context: dict, d_factor: float = 1.0):
 
 def _reduce_d(context: dict, d_factor: float = 1.0):
     factor = 0.8 / d_factor if d_factor > 0 else 0.8
-    context["new_d"] = context.get("current_d", 25.0) * factor
+    current = context.get("current_d", 25.0)
+    if current < 0.5:
+        current = 25.0
+    context["new_d"] = current * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Reduce D: {context.get('current_d', 25.0):.1f} -> {context['new_d']:.1f}")
@@ -162,7 +178,10 @@ def _reduce_d(context: dict, d_factor: float = 1.0):
 
 def _increase_i(context: dict, i_factor: float = 1.0):
     factor = 1.2 * i_factor
-    context["new_i"] = context.get("current_i", 60.0) * factor
+    current = context.get("current_i", 60.0)
+    if current < 0.5:
+        current = 60.0
+    context["new_i"] = current * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Increase I: {context.get('current_i', 60.0):.1f} -> {context['new_i']:.1f}")
@@ -170,7 +189,10 @@ def _increase_i(context: dict, i_factor: float = 1.0):
 
 def _reduce_i(context: dict, i_factor: float = 1.0):
     factor = 0.85 / i_factor if i_factor > 0 else 0.85
-    context["new_i"] = context.get("current_i", 60.0) * factor
+    current = context.get("current_i", 60.0)
+    if current < 0.5:
+        current = 60.0
+    context["new_i"] = current * factor
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Reduce I: {context.get('current_i', 60.0):.1f} -> {context['new_i']:.1f}")

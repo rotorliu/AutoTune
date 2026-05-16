@@ -111,10 +111,17 @@ class RateTuner:
         center_rc = normalized_rc[np.abs(normalized_rc) < 0.3]
         center_gyro = gyro_output[np.abs(normalized_rc) < 0.3]
 
-        if len(center_rc) > 10 and len(center_gyro) > 10:
-            rc_gradient = np.polyfit(center_rc[np.abs(center_rc) > 0.02],
-                                     center_gyro[np.abs(center_rc) > 0.02], 1)
-            center_sensitivity = abs(rc_gradient[0]) if len(rc_gradient) > 0 else 0.0
+        valid_mask = np.abs(center_rc) > 0.02
+        valid_rc = center_rc[valid_mask]
+        valid_gyro = center_gyro[valid_mask]
+
+        if len(valid_rc) > 10 and len(valid_gyro) > 10:
+            try:
+                rc_gradient = np.polyfit(valid_rc, valid_gyro, 1)
+                center_sensitivity = abs(rc_gradient[0]) if len(rc_gradient) > 0 else 0.0
+            except (np.linalg.LinAlgError, ValueError) as e:
+                logger.warning(f"[{axis_name}] Failed to compute center sensitivity: {e}")
+                center_sensitivity = 0.0
 
             reference_sensitivity = target_max_rate * 0.3
 
