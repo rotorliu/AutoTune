@@ -47,12 +47,21 @@ class RuleEngine:
         p_factor = scene_prefs.pid_p_multiplier if scene_prefs else 1.0
         i_factor = scene_prefs.pid_i_multiplier if scene_prefs else 1.0
         d_factor = scene_prefs.pid_d_multiplier if scene_prefs else 1.0
+        aggressiveness = scene_prefs.aggressiveness if scene_prefs else 1.0
 
         engine.add_rule(TuningRule(
             name="high_overshoot",
             description=f"Reduce P or increase D when overshoot > {overshoot_threshold}%",
             condition_fn=lambda ctx, thresh=overshoot_threshold: ctx.get("overshoot_pct", 0) > thresh,
             action_fn=lambda ctx, df=d_factor: _reduce_p_or_increase_d(ctx, d_factor=df),
+            priority=10,
+        ))
+
+        engine.add_rule(TuningRule(
+            name="motor_saturation",
+            description="Reduce P when motor saturation detected",
+            condition_fn=lambda ctx: ctx.get("motor_saturation_pct", 0) > 10.0,
+            action_fn=lambda ctx, pf=p_factor: _reduce_p(ctx, p_factor=pf),
             priority=10,
         ))
 
@@ -74,9 +83,28 @@ class RuleEngine:
 
         engine.add_rule(TuningRule(
             name="high_freq_noise",
-            description="Increase D when high frequency oscillation detected",
+            description="Increase D and D_Min when high frequency noise detected",
             condition_fn=lambda ctx: ctx.get("energy_high_pct", 0) > 30.0,
-            action_fn=lambda ctx, df=d_factor: _increase_d(ctx, d_factor=df),
+            action_fn=lambda ctx, df=d_factor: _increase_d_with_dmin(ctx, d_factor=df),
+            priority=8,
+        ))
+
+        engine.add_rule(TuningRule(
+            name="d_term_excessive",
+            description="Reduce D if oscillation index too high despite D being high",
+            condition_fn=lambda ctx: (ctx.get("oscillation_index", 0) > 0.6
+                                      and ctx.get("current_d", 0) > ctx.get("current_p", 0) * 0.5),
+            action_fn=lambda ctx, df=d_factor: _reduce_d(ctx, d_factor=df),
+            priority=8,
+        ))
+
+        engine.add_rule(TuningRule(
+            name="ff_boost_aggressive",
+            description="Boost FF when rise time is slow and P is near max",
+            condition_fn=lambda ctx: (ctx.get("rise_time_ms", 0) > rise_time_threshold * 0.8
+                                      and ctx.get("current_p", 0) >= 180.0
+                                      and ctx.get("overshoot_pct", 0) < overshoot_threshold),
+            action_fn=lambda ctx, a=aggressiveness: _increase_ff(ctx, aggressiveness=a),
             priority=8,
         ))
 
@@ -98,20 +126,22 @@ class RuleEngine:
         ))
 
         engine.add_rule(TuningRule(
-            name="motor_saturation",
-            description="Reduce P when motor saturation detected",
-            condition_fn=lambda ctx: ctx.get("motor_saturation_pct", 0) > 10.0,
-            action_fn=lambda ctx, pf=p_factor: _reduce_p(ctx, p_factor=pf),
-            priority=10,
+            name="dmin_boost_on_overshoot",
+            description="Boost D_Min_Gain when oscillation persists after reducing P",
+            condition_fn=lambda ctx: (ctx.get("oscillation_index", 0) > 0.4
+                                      and ctx.get("current_d_min", 0) < 30.0),
+            action_fn=_increase_dmin_gain,
+            priority=6,
         ))
 
         engine.add_rule(TuningRule(
-            name="d_term_excessive",
-            description="Reduce D if oscillation index too high despite D being high",
-            condition_fn=lambda ctx: (ctx.get("oscillation_index", 0) > 0.6
-                                      and ctx.get("current_d", 0) > ctx.get("current_p", 0) * 0.5),
-            action_fn=lambda ctx, df=d_factor: _reduce_d(ctx, d_factor=df),
-            priority=8,
+            name="d_gain_boost_tune",
+            description="Tune D_Gain_Boost based on response sharpness",
+            condition_fn=lambda ctx: (ctx.get("rise_time_ms", 0) < 20.0
+                                      and ctx.get("overshoot_pct", 0) < 10.0
+                                      and ctx.get("energy_high_pct", 0) < 25.0),
+            action_fn=_increase_d_gain_boost,
+            priority=5,
         ))
 
         return engine
@@ -196,3 +226,45 @@ def _reduce_i(context: dict, i_factor: float = 1.0):
     if "applied_rules" not in context:
         context["applied_rules"] = []
     context["applied_rules"].append(f"Reduce I: {context.get('current_i', 60.0):.1f} -> {context['new_i']:.1f}")
+
+
+def _increase_ff(context: dict, aggressiveness: float = 1.0):
+    factor = 1.15 * aggressiveness
+    current = context.get("current_ff", 0.0)
+    if current < 0.5:
+        current = 80.0
+    context["new_ff"] = min(255.0, current * factor)
+    if "applied_rules" not in context:
+        context["applied_rules"] = []
+    context["applied_rules"].append(f"Increase FF: {current:.0f} -> {context['new_ff']:.0f}")
+
+
+def _increase_d_with_dmin(context: dict, d_factor: float = 1.0):
+    _increase_d(context, d_factor=d_factor)
+    current_dmin = context.get("current_d_min", 20.0)
+    if current_dmin < 0.5:
+        current_dmin = 20.0
+    context["new_d_min"] = min(100.0, current_dmin * 1.1)
+    if "applied_rules" not in context:
+        context["applied_rules"] = []
+    context["applied_rules"].append(f"Increase D_Min: {current_dmin:.0f} -> {context['new_d_min']:.0f}")
+
+
+def _increase_dmin_gain(context: dict):
+    current = context.get("current_d_min_gain", 0.0)
+    if current < 0.5:
+        current = 15.0
+    context["new_d_min_gain"] = min(100.0, current * 1.2)
+    if "applied_rules" not in context:
+        context["applied_rules"] = []
+    context["applied_rules"].append(f"Increase D_Min_Gain: {current:.0f} -> {context['new_d_min_gain']:.0f}")
+
+
+def _increase_d_gain_boost(context: dict):
+    current = context.get("current_d_gain_boost", 0.0)
+    if current < 0.5:
+        current = 20.0
+    context["new_d_gain_boost"] = min(100.0, current * 1.15)
+    if "applied_rules" not in context:
+        context["applied_rules"] = []
+    context["applied_rules"].append(f"Increase D_Gain_Boost: {current:.0f} -> {context['new_d_gain_boost']:.0f}")

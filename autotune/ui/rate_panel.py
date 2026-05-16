@@ -2,16 +2,26 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QTableWidget, QTableWidgetItem, QPushButton,
-    QHeaderView, QMessageBox, QAbstractItemView,
+    QHeaderView, QMessageBox, QAbstractItemView, QFormLayout,
+    QDoubleSpinBox, QSpinBox,
 )
 import numpy as np
 import pyqtgraph as pg
 
 
 class RatePanel(QWidget):
+    AXIS_COLS = ["轴", "RC Rate", "Super Rate", "RC Expo"]
+    TPA_FIELDS = [
+        ("TPA Rate", "tpa_rate", 0.0, 0.99, 0.01, 2),
+        ("TPA Breakpoint", "tpa_breakpoint", 1000, 2000, 10, 0),
+        ("Throttle RC Rate", "throttle_rc_rate", 0.1, 2.55, 0.01, 2),
+        ("Throttle RC Expo", "throttle_rc_expo", 0.0, 0.99, 0.01, 2),
+    ]
+
     def __init__(self, controller):
         super().__init__()
         self.controller = controller
+        self._tpa_widgets = {}
         self._init_ui()
 
     def _init_ui(self):
@@ -35,12 +45,12 @@ class RatePanel(QWidget):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
-        table_group = QGroupBox("Rate 参数")
+        table_group = QGroupBox("Rate 参数 (分轴)")
         table_layout = QVBoxLayout(table_group)
 
         self.table = QTableWidget()
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["轴", "RC Rate", "Super Rate", "RC Expo"])
+        self.table.setHorizontalHeaderLabels(self.AXIS_COLS)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
@@ -60,6 +70,25 @@ class RatePanel(QWidget):
 
         table_layout.addWidget(self.table)
         layout.addWidget(table_group)
+
+        tpa_group = QGroupBox("TPA 与油门 Rate 参数")
+        tpa_layout = QFormLayout(tpa_group)
+
+        for label, key, min_v, max_v, step, decimals in self.TPA_FIELDS:
+            if decimals == 0:
+                widget = QSpinBox()
+                widget.setRange(int(min_v), int(max_v))
+                widget.setSingleStep(int(step))
+            else:
+                widget = QDoubleSpinBox()
+                widget.setRange(min_v, max_v)
+                widget.setSingleStep(step)
+                widget.setDecimals(decimals)
+            widget.setMinimumWidth(120)
+            tpa_layout.addRow(QLabel(label), widget)
+            self._tpa_widgets[key] = widget
+
+        layout.addWidget(tpa_group)
 
         chart_group = QGroupBox("Rate 曲线预览")
         chart_layout = QVBoxLayout(chart_group)
@@ -88,12 +117,14 @@ class RatePanel(QWidget):
     def load_from_controller(self):
         profile = self.controller.rate_profile
         self._populate_table(profile)
+        self._populate_tpa(profile)
         self._update_curves(profile)
 
     def load_from_dict(self, profile_dict: dict):
         from autotune.fc.rate import RateProfile
         profile = RateProfile.from_dict(profile_dict)
         self._populate_table(profile)
+        self._populate_tpa(profile)
         self._update_curves(profile)
 
     def _populate_table(self, profile):
@@ -102,6 +133,21 @@ class RatePanel(QWidget):
             self.table.item(i, 1).setText(f"{axis.rc_rate:.2f}")
             self.table.item(i, 2).setText(f"{axis.super_rate:.3f}")
             self.table.item(i, 3).setText(f"{axis.rc_expo:.2f}")
+
+    def _populate_tpa(self, profile):
+        tpa_values = {
+            "tpa_rate": profile.tpa_rate,
+            "tpa_breakpoint": profile.tpa_breakpoint,
+            "throttle_rc_rate": profile.throttle_rc_rate,
+            "throttle_rc_expo": profile.throttle_rc_expo,
+        }
+        for key, widget in self._tpa_widgets.items():
+            if key in tpa_values:
+                val = tpa_values[key]
+                if isinstance(widget, QSpinBox):
+                    widget.setValue(int(val))
+                else:
+                    widget.setValue(val)
 
     def _update_curves(self, profile):
         rc_inputs = np.linspace(-100, 100, 200) / 100.0
@@ -129,6 +175,11 @@ class RatePanel(QWidget):
                 axis.rc_rate = float(self.table.item(i, 1).text() or "1.0")
                 axis.super_rate = float(self.table.item(i, 2).text() or "0.7")
                 axis.rc_expo = float(self.table.item(i, 3).text() or "0.0")
+
+            for _, key, _, _, _, _ in self.TPA_FIELDS:
+                widget = self._tpa_widgets[key]
+                val = widget.value()
+                setattr(profile, key, val)
 
             self.controller.write_rate_profile(profile)
             QMessageBox.information(self, "成功", "Rate 参数已写入飞控！")

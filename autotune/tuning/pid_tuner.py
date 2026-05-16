@@ -21,6 +21,19 @@ class PIDTuner:
     GYRO_KEYS = ["gyro_x", "gyro_y", "gyro_z"]
     SETPOINT_KEYS = ["setpoint_x", "setpoint_y", "setpoint_z"]
 
+    PID_RANGES = {
+        "p": (5.0, 200.0),
+        "i": (5.0, 200.0),
+        "d": (0.0, 100.0),
+        "ff": (0.0, 255.0),
+        "d_min": (0.0, 100.0),
+        "d_min_gain": (0.0, 100.0),
+        "d_min_advance": (0.0, 50.0),
+        "d_gain_boost": (0.0, 100.0),
+    }
+
+    PARAM_NAMES = ["p", "i", "d", "ff", "d_min", "d_min_gain", "d_min_advance", "d_gain_boost"]
+
     def __init__(
         self,
         sample_rate: float = DEFAULT_SAMPLE_RATE,
@@ -80,6 +93,7 @@ class PIDTuner:
             self._notify_progress(f"正在分析 {axis_name} 轴数据...", 20 + axis_idx * 20)
 
             axis_pid = tuned.get_axis(axis_idx)
+            axis_adv = tuned.get_axis_advanced(axis_idx)
             gyro_analysis = analyze_gyro_data(gyro, self.sample_rate)
             step_metrics = analyze_step_response(setpoint, gyro, sample_rate=self.sample_rate)
 
@@ -90,18 +104,22 @@ class PIDTuner:
                 self.sample_rate,
             )
 
-            new_pid = self._tune_single_axis(
-                axis_pid,
-                gyro_analysis,
-                step_metrics,
-                quality,
-                axis_name,
+            new_pid, new_adv = self._tune_single_axis(
+                axis_pid, axis_adv, gyro_analysis, step_metrics, quality, axis_name,
             )
 
             tuned_axis = tuned.get_axis(axis_idx)
             tuned_axis.p = new_pid.p
             tuned_axis.i = new_pid.i
             tuned_axis.d = new_pid.d
+
+            tuned_adv = tuned.get_axis_advanced(axis_idx)
+            tuned_adv.ff_gain = new_adv.ff_gain
+            tuned_adv.d_min = new_adv.d_min
+            tuned_adv.d_min_gain = new_adv.d_min_gain
+            tuned_adv.d_min_advance = new_adv.d_min_advance
+            tuned_adv.d_gain_boost = new_adv.d_gain_boost
+            tuned.use_advanced = True
 
             self._notify_progress(f"{axis_name} 轴调优完成", 40 + axis_idx * 20)
 
@@ -110,18 +128,25 @@ class PIDTuner:
     def _tune_single_axis(
         self,
         current_pid: PIDAxis,
+        current_adv: PIDAdvancedAxis,
         gyro_analysis: dict,
         step_metrics,
         quality,
         axis_name: str,
-    ) -> PIDAxis:
+    ):
         new_pid = current_pid.clone()
+        new_adv = current_adv.clone()
 
         for iteration in range(MAX_PID_ITERATIONS):
             context = {
                 "current_p": new_pid.p,
                 "current_i": new_pid.i,
                 "current_d": new_pid.d,
+                "current_ff": new_adv.ff_gain,
+                "current_d_min": new_adv.d_min,
+                "current_d_min_gain": new_adv.d_min_gain,
+                "current_d_min_advance": new_adv.d_min_advance,
+                "current_d_gain_boost": new_adv.d_gain_boost,
                 "overshoot_pct": step_metrics.overshoot_pct if step_metrics else 0.0,
                 "rise_time_ms": step_metrics.rise_time if step_metrics else 50.0,
                 "settling_time_ms": step_metrics.settling_time if step_metrics else 0.0,
@@ -134,6 +159,11 @@ class PIDTuner:
                 "new_p": new_pid.p,
                 "new_i": new_pid.i,
                 "new_d": new_pid.d,
+                "new_ff": new_adv.ff_gain,
+                "new_d_min": new_adv.d_min,
+                "new_d_min_gain": new_adv.d_min_gain,
+                "new_d_min_advance": new_adv.d_min_advance,
+                "new_d_gain_boost": new_adv.d_gain_boost,
                 "applied_rules": [],
             }
 
@@ -142,29 +172,29 @@ class PIDTuner:
             if not context.get("applied_rules"):
                 break
 
-            new_p = context.get("new_p", new_pid.p)
-            new_i = context.get("new_i", new_pid.i)
-            new_d = context.get("new_d", new_pid.d)
-
-            new_p = self._clamp_change(current_pid.p, new_p)
-            new_i = self._clamp_change(current_pid.i, new_i)
-            new_d = self._clamp_change(current_pid.d, new_d)
-
-            new_pid.p = max(5.0, min(200.0, new_p))
-            new_pid.i = max(5.0, min(200.0, new_i))
-            new_pid.d = max(0.0, min(100.0, new_d))
+            new_pid.p = self._clamp_param(current_pid.p, context.get("new_p", new_pid.p), "p")
+            new_pid.i = self._clamp_param(current_pid.i, context.get("new_i", new_pid.i), "i")
+            new_pid.d = self._clamp_param(current_pid.d, context.get("new_d", new_pid.d), "d")
+            new_adv.ff_gain = self._clamp_param(current_adv.ff_gain, context.get("new_ff", new_adv.ff_gain), "ff")
+            new_adv.d_min = self._clamp_param(current_adv.d_min, context.get("new_d_min", new_adv.d_min), "d_min")
+            new_adv.d_min_gain = self._clamp_param(current_adv.d_min_gain, context.get("new_d_min_gain", new_adv.d_min_gain), "d_min_gain")
+            new_adv.d_min_advance = self._clamp_param(current_adv.d_min_advance, context.get("new_d_min_advance", new_adv.d_min_advance), "d_min_advance")
+            new_adv.d_gain_boost = self._clamp_param(current_adv.d_gain_boost, context.get("new_d_gain_boost", new_adv.d_gain_boost), "d_gain_boost")
 
             for rule_msg in context.get("applied_rules", []):
                 logger.info(f"[{axis_name}] Iteration {iteration + 1}: {rule_msg}")
 
-        return new_pid
+        return new_pid, new_adv
 
-    def _clamp_change(self, original: float, new: float) -> float:
+    def _clamp_param(self, original: float, new: float, param_name: str = "p") -> float:
         if abs(original) < 0.01:
-            return new
-        max_change = abs(original) * (self._max_change_pct / 100.0)
-        clamped = max(original - max_change, min(original + max_change, new))
-        return clamped
+            result = new
+        else:
+            max_change = abs(original) * (self._max_change_pct / 100.0)
+            result = max(original - max_change, min(original + max_change, new))
+
+        lo, hi = self.PID_RANGES.get(param_name, (0.0, 255.0))
+        return max(lo, min(hi, result))
 
     def tune_from_telemetry(
         self,
@@ -195,18 +225,44 @@ class PIDTuner:
     ) -> dict:
         report = {"axes": {}}
 
-        for i, axis_name in enumerate(self.AXES):
-            orig_axis = original.get_axis(i)
-            tuned_axis = tuned.get_axis(i)
+        param_keys = [
+            ("P", "p"),
+            ("I", "i"),
+            ("D", "d"),
+            ("FF", "ff"),
+            ("D_Min", "d_min"),
+            ("D_Min_Gain", "d_min_gain"),
+            ("D_Min_Advance", "d_min_advance"),
+            ("D_Gain_Boost", "d_gain_boost"),
+        ]
 
-            report["axes"][axis_name] = {
-                "P": {"original": orig_axis.p, "tuned": tuned_axis.p,
-                      "change_pct": _pct_change(orig_axis.p, tuned_axis.p)},
-                "I": {"original": orig_axis.i, "tuned": tuned_axis.i,
-                      "change_pct": _pct_change(orig_axis.i, tuned_axis.i)},
-                "D": {"original": orig_axis.d, "tuned": tuned_axis.d,
-                      "change_pct": _pct_change(orig_axis.d, tuned_axis.d)},
+        for axis_idx, axis_name in enumerate(self.AXES):
+            orig_pid = original.get_axis(axis_idx)
+            tuned_pid = tuned.get_axis(axis_idx)
+            orig_adv = original.get_axis_advanced(axis_idx)
+            tuned_adv = tuned.get_axis_advanced(axis_idx)
+
+            orig_values = {
+                "p": orig_pid.p, "i": orig_pid.i, "d": orig_pid.d,
+                "ff": orig_adv.ff_gain, "d_min": orig_adv.d_min,
+                "d_min_gain": orig_adv.d_min_gain, "d_min_advance": orig_adv.d_min_advance,
+                "d_gain_boost": orig_adv.d_gain_boost,
             }
+            tuned_values = {
+                "p": tuned_pid.p, "i": tuned_pid.i, "d": tuned_pid.d,
+                "ff": tuned_adv.ff_gain, "d_min": tuned_adv.d_min,
+                "d_min_gain": tuned_adv.d_min_gain, "d_min_advance": tuned_adv.d_min_advance,
+                "d_gain_boost": tuned_adv.d_gain_boost,
+            }
+
+            axis_report = {}
+            for label, key in param_keys:
+                axis_report[label] = {
+                    "original": orig_values[key],
+                    "tuned": tuned_values[key],
+                    "change_pct": _pct_change(orig_values[key], tuned_values[key]),
+                }
+            report["axes"][axis_name] = axis_report
 
         return report
 

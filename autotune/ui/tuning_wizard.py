@@ -1,13 +1,17 @@
+import json
+import logging
+import numpy as np
+
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QLabel, QPushButton, QProgressBar, QTextEdit,
-    QFileDialog, QMessageBox, QRadioButton, QButtonGroup,
-    QCheckBox, QDialog, QVBoxLayout as QVBox, QComboBox,
+    QLabel, QTextEdit, QPushButton, QCheckBox, QComboBox,
+    QFileDialog, QProgressBar, QButtonGroup, QRadioButton,
+    QMessageBox, QWizardPage, QWizard, QStackedWidget,
 )
-import numpy as np
 
 from autotune.tuning.pid_tuner import PIDTuner
+from autotune.tuning.filter_tuner import FilterTuner
 from autotune.tuning.rate_tuner import RateTuner
 from autotune.acquisition.blackbox import BlackboxParser
 from autotune.utils.tuning_history import TuningHistory
@@ -16,15 +20,16 @@ from autotune.tuning.flight_scenes import FlightScene, get_all_scenes, get_scene
 
 class TuningWorker(QThread):
     progress = Signal(str, int)
-    finished = Signal(dict, dict)
+    finished = Signal(dict, dict, dict)
     error = Signal(str)
 
-    def __init__(self, data, controller, tune_pid=True, tune_rate=True, conservative=True, scene=None):
+    def __init__(self, data, controller, tune_pid=True, tune_rate=True, tune_filter=True, conservative=True, scene=None):
         super().__init__()
         self.data = data
         self.controller = controller
         self.tune_pid = tune_pid
         self.tune_rate = tune_rate
+        self.tune_filter = tune_filter
         self.conservative = conservative
         self.scene = scene
 
@@ -32,23 +37,36 @@ class TuningWorker(QThread):
         try:
             result_pid = None
             result_rate = None
+            result_filter = None
 
             if self.tune_pid:
                 self.progress.emit("正在分析飞行数据进行 PID 调优...", 10)
                 tuner = PIDTuner(conservative=self.conservative, scene=self.scene)
+                tuner.set_progress_callback(lambda msg, pct: self.progress.emit(msg, pct))
                 result_pid = tuner.tune(self.data, self.controller.pid_profile)
-                self.progress.emit("PID 调优完成", 60)
+                self.progress.emit("PID 调优完成", 40)
 
             if self.tune_rate:
-                self.progress.emit("正在分析飞行数据进行 Rate 调优...", 65)
+                self.progress.emit("正在分析飞行数据进行 Rate 调优...", 45)
                 rate_tuner = RateTuner(conservative=self.conservative)
+                rate_tuner.set_progress_callback(lambda msg, pct: self.progress.emit(msg, 45 + int(pct * 0.3)))
                 result_rate = rate_tuner.tune(self.data, self.controller.rate_profile)
-                self.progress.emit("Rate 调优完成", 90)
+                self.progress.emit("Rate 调优完成", 75)
+
+            if self.tune_filter:
+                self.progress.emit("正在分析陀螺仪噪声进行滤波器调优...", 78)
+                filter_tuner = FilterTuner(conservative=self.conservative)
+                filter_tuner.set_progress_callback(lambda msg, pct: self.progress.emit(msg, 78 + int(pct * 0.2)))
+                result_filter = filter_tuner.tune(
+                    self.data, self.controller.config.filter_config
+                )
+                self.progress.emit("滤波器调优完成", 98)
 
             self.progress.emit("调优完成！", 100)
             self.finished.emit(
                 result_pid.to_dict() if result_pid else None,
                 result_rate.to_dict() if result_rate else None,
+                result_filter.to_dict() if result_filter else None,
             )
 
         except Exception as e:
@@ -59,6 +77,7 @@ class TuningWizard(QWidget):
     status_message = Signal(str)
     pid_updated = Signal(dict)
     rate_updated = Signal(dict)
+    filter_updated = Signal(dict)
 
     def __init__(self, controller):
         super().__init__()
@@ -67,6 +86,7 @@ class TuningWizard(QWidget):
         self._telemetry_data: list[dict] = []
         self._tuned_pid = None
         self._tuned_rate = None
+        self._tuned_filter = None
         self._history = TuningHistory()
         self._init_ui()
 
@@ -136,6 +156,10 @@ class TuningWizard(QWidget):
         self.tune_rate_cb = QCheckBox("Rate 调优")
         self.tune_rate_cb.setChecked(True)
         tune_layout.addWidget(self.tune_rate_cb)
+
+        self.tune_filter_cb = QCheckBox("滤波器调优")
+        self.tune_filter_cb.setChecked(True)
+        tune_layout.addWidget(self.tune_filter_cb)
 
         self.conservative_cb = QCheckBox("保守模式 (建议首次使用)")
         self.conservative_cb.setChecked(True)
@@ -331,6 +355,7 @@ class TuningWizard(QWidget):
             self.controller,
             tune_pid=self.tune_pid_cb.isChecked(),
             tune_rate=self.tune_rate_cb.isChecked(),
+            tune_filter=self.tune_filter_cb.isChecked(),
             conservative=self.conservative_cb.isChecked(),
             scene=selected_scene,
         )
@@ -343,7 +368,7 @@ class TuningWizard(QWidget):
         self.progress_bar.setValue(percent)
         self._log(message)
 
-    def _on_finished(self, pid_result, rate_result):
+    def _on_finished(self, pid_result, rate_result, filter_result):
         self.start_btn.setEnabled(True)
         self.apply_btn.setEnabled(True)
 
@@ -351,13 +376,21 @@ class TuningWizard(QWidget):
 
         self._tuned_pid = pid_result
         self._tuned_rate = rate_result
+        self._tuned_filter = filter_result
 
         if pid_result and self.tune_pid_cb.isChecked():
             result_text += "--- PID 参数 ---\n"
             for axis in ["Roll", "Pitch", "Yaw"]:
                 if axis in pid_result:
                     a = pid_result[axis]
-                    result_text += f"{axis}: P={a.get('P', 0):.0f}, I={a.get('I', 0):.0f}, D={a.get('D', 0):.0f}\n"
+                    adv = pid_result.get(f"{axis}_Advanced", {})
+                    result_text += (
+                        f"{axis}: P={a.get('P', 0):.0f}, I={a.get('I', 0):.0f}, D={a.get('D', 0):.0f}, "
+                        f"FF={adv.get('FF', 0):.0f}, D_Min={adv.get('D_Min', 0):.0f}, "
+                        f"D_Min_Gain={adv.get('D_Min_Gain', 0):.0f}, "
+                        f"D_Min_Advance={adv.get('D_Min_Advance', 0):.0f}, "
+                        f"D_Gain_Boost={adv.get('D_Gain_Boost', 0):.0f}\n"
+                    )
             result_text += "\n"
 
         if rate_result and self.tune_rate_cb.isChecked():
@@ -370,6 +403,27 @@ class TuningWizard(QWidget):
                         f"Super_Rate={a.get('Super_Rate', 0):.3f}, "
                         f"RC_Expo={a.get('RC_Expo', 0):.2f}\n"
                     )
+            tpa = rate_result.get("global", {})
+            if tpa:
+                result_text += (
+                    f"TPA_Rate={tpa.get('TPA_Rate', {}).get('tuned', 0):.2f}, "
+                    f"TPA_Breakpoint={tpa.get('TPA_Breakpoint', {}).get('tuned', 1500):.0f}\n"
+                )
+                result_text += (
+                    f"Throttle_RC_Rate={tpa.get('Throttle_RC_Rate', {}).get('tuned', 1.0):.2f}, "
+                    f"Throttle_RC_Expo={tpa.get('Throttle_RC_Expo', {}).get('tuned', 0.0):.2f}\n"
+                )
+            result_text += "\n"
+
+        if filter_result and self.tune_filter_cb.isChecked():
+            result_text += "--- 滤波器参数 ---\n"
+            for key, val in filter_result.items():
+                if isinstance(val, dict):
+                    result_text += (
+                        f"{key}: {val.get('original', 'N/A')} -> {val.get('tuned', 'N/A')} "
+                        f"({val.get('change_pct', 0):+.1f}%)\n"
+                    )
+            result_text += "\n"
 
         self.result_text.setText(result_text)
         self._log("调优完成！请查看结果并决定是否应用到飞控")
@@ -415,6 +469,13 @@ class TuningWizard(QWidget):
                 self.controller.write_rate_profile(new_rate)
                 self.rate_updated.emit(self._tuned_rate)
                 self._log("Rate 参数已写入飞控")
+
+            if self._tuned_filter and self.tune_filter_cb.isChecked():
+                from autotune.fc.config import FilterConfig
+                new_filter = FilterConfig.from_dict(self._tuned_filter)
+                self.controller.write_filter_config(new_filter)
+                self.filter_updated.emit(self._tuned_filter)
+                self._log("滤波器配置已写入飞控")
 
             QMessageBox.information(self, "成功", "调优参数已写入飞控！")
             self.status_message.emit("调优参数已应用")

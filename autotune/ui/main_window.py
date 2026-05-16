@@ -11,6 +11,7 @@ from autotune.fc.controller import FCController
 from autotune.ui.connection_panel import ConnectionPanel
 from autotune.ui.pid_panel import PIDPanel
 from autotune.ui.rate_panel import RatePanel
+from autotune.ui.filter_panel import FilterPanel
 from autotune.ui.chart_panel import ChartPanel
 from autotune.ui.tuning_wizard import TuningWizard
 from autotune.ui.profile_panel import ProfilePanel
@@ -49,6 +50,9 @@ class MainWindow(QWidget):
         self.rate_panel = RatePanel(self.controller)
         self.tab_widget.addTab(self.rate_panel, "Rate 配置")
 
+        self.filter_panel = FilterPanel(self.controller)
+        self.tab_widget.addTab(self.filter_panel, "滤波器配置")
+
         self.chart_panel = ChartPanel()
         self.tab_widget.addTab(self.chart_panel, "实时数据")
 
@@ -56,11 +60,13 @@ class MainWindow(QWidget):
         self.tuning_wizard.status_message.connect(self.status_message.emit)
         self.tuning_wizard.pid_updated.connect(self._on_pid_updated)
         self.tuning_wizard.rate_updated.connect(self._on_rate_updated)
+        self.tuning_wizard.filter_updated.connect(self._on_filter_updated)
         self.tab_widget.addTab(self.tuning_wizard, "自动调参")
 
         self.profile_panel = ProfilePanel(self.controller)
         self.profile_panel.pid_load_request.connect(self._on_pid_updated)
         self.profile_panel.rate_load_request.connect(self._on_rate_updated)
+        self.profile_panel.filter_load_request.connect(self._on_filter_updated)
         self.tab_widget.addTab(self.profile_panel, "方案管理")
 
         layout.addWidget(self.tab_widget)
@@ -77,6 +83,7 @@ class MainWindow(QWidget):
             self.controller.read_all()
             self.pid_panel.load_from_controller()
             self.rate_panel.load_from_controller()
+            self.filter_panel.load_from_controller()
             self._start_telemetry()
         else:
             self._stop_telemetry()
@@ -107,6 +114,9 @@ class MainWindow(QWidget):
 
     def _on_rate_updated(self, profile_dict: dict):
         self.rate_panel.load_from_dict(profile_dict)
+
+    def _on_filter_updated(self, config_dict: dict):
+        self.filter_panel.load_from_dict(config_dict)
 
     def cleanup(self):
         self._stop_telemetry()

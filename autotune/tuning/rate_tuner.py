@@ -60,6 +60,11 @@ class RateTuner:
             tuned_axis.super_rate = new_rate.super_rate
             tuned_axis.rc_expo = new_rate.rc_expo
 
+        throttle_rc = data.get("rc_throttle")
+        if throttle_rc is not None and len(throttle_rc) > 10:
+            self._notify_progress("正在分析 TPA 参数...", 85)
+            self._tune_tpa(tuned, throttle_rc, data)
+
         return tuned
 
     def _tune_single_axis(
@@ -143,6 +148,71 @@ class RateTuner:
 
         return new_rate
 
+    def _tune_tpa(self, profile: RateProfile, throttle_rc: np.ndarray, data: dict):
+        high_throttle_mask = throttle_rc > 1500
+        high_count = np.sum(high_throttle_mask)
+
+        if high_count < 50:
+            logger.info("Insufficient high-throttle data for TPA tuning, skipping")
+            return
+
+        gyro_x = data.get("gyro_x", np.array([]))
+        gyro_y = data.get("gyro_y", np.array([]))
+        gyro_z = data.get("gyro_z", np.array([]))
+
+        motor_data = []
+        for i in range(4):
+            m = data.get(f"motor_{i}")
+            if m is not None and len(m) > 0:
+                motor_data.append(m)
+
+        needs_tpa = False
+        if len(motor_data) >= 4:
+            all_motors = np.column_stack(motor_data)
+            avg_motor = np.mean(all_motors, axis=1)
+            high_throttle_avg = np.mean(avg_motor[high_throttle_mask]) if high_count > 0 else 0
+            low_throttle_mask = (throttle_rc > 1000) & (throttle_rc < 1300)
+            low_throttle_avg = np.mean(avg_motor[low_throttle_mask]) if np.sum(low_throttle_mask) > 0 else 0
+
+            if high_throttle_avg > 0 and low_throttle_avg > 0:
+                motor_saturation = (high_throttle_avg - low_throttle_avg) / max(low_throttle_avg, 1.0)
+            else:
+                motor_saturation = 0
+
+            high_throttle_oscillation = 0
+            if len(gyro_x) > 0 and high_count > 50:
+                high_gyro_x = gyro_x[high_throttle_mask[:len(gyro_x)]]
+                high_gyro_y = gyro_y[high_throttle_mask[:len(gyro_y)]]
+                high_gyro_z = gyro_z[high_throttle_mask[:len(gyro_z)]]
+                high_osc = (np.std(high_gyro_x) + np.std(high_gyro_y) + np.std(high_gyro_z)) / 3.0
+                low_throttle_mask_gyro = (throttle_rc > 1000) & (throttle_rc < 1300)
+                low_osc = 0
+                if np.sum(low_throttle_mask_gyro) > 50:
+                    low_gyro_x = gyro_x[low_throttle_mask_gyro[:len(gyro_x)]]
+                    low_gyro_y = gyro_y[low_throttle_mask_gyro[:len(gyro_y)]]
+                    low_gyro_z = gyro_z[low_throttle_mask_gyro[:len(gyro_z)]]
+                    low_osc = (np.std(low_gyro_x) + np.std(low_gyro_y) + np.std(low_gyro_z)) / 3.0
+
+                if low_osc > 0:
+                    high_throttle_oscillation = high_osc / low_osc
+
+            if motor_saturation > 0.15 or high_throttle_oscillation > 1.3:
+                needs_tpa = True
+
+        if needs_tpa:
+            new_tpa = min(0.5, profile.tpa_rate + 0.05)
+            if new_tpa > 0.01:
+                profile.tpa_rate = new_tpa
+                profile.tpa_breakpoint = min(1800, profile.tpa_breakpoint + 50)
+                logger.info(
+                    f"TPA adjusted: rate={profile.tpa_rate:.2f}, "
+                    f"breakpoint={profile.tpa_breakpoint}"
+                )
+            else:
+                profile.tpa_rate = 0.10
+                profile.tpa_breakpoint = 1500
+                logger.info("TPA enabled with conservative defaults")
+
     def _clamp_change(self, original: float, new: float) -> float:
         if abs(original) < 0.001:
             return new
@@ -154,7 +224,7 @@ class RateTuner:
         original: RateProfile,
         tuned: RateProfile,
     ) -> dict:
-        report = {"axes": {}}
+        report = {"axes": {}, "global": {}}
 
         for i, axis_name in enumerate(self.AXES):
             orig = original.get_axis(i)
@@ -173,6 +243,17 @@ class RateTuner:
                 "Max_Angular_Rate": {"original": orig_max, "tuned": tuned_max,
                                      "change_pct": _pct_change(orig_max, tuned_max)},
             }
+
+        report["global"] = {
+            "TPA_Rate": {"original": original.tpa_rate, "tuned": tuned.tpa_rate,
+                         "change_pct": _pct_change(original.tpa_rate, tuned.tpa_rate)},
+            "TPA_Breakpoint": {"original": original.tpa_breakpoint, "tuned": tuned.tpa_breakpoint,
+                               "change_pct": _pct_change(original.tpa_breakpoint, tuned.tpa_breakpoint)},
+            "Throttle_RC_Rate": {"original": original.throttle_rc_rate, "tuned": tuned.throttle_rc_rate,
+                                 "change_pct": _pct_change(original.throttle_rc_rate, tuned.throttle_rc_rate)},
+            "Throttle_RC_Expo": {"original": original.throttle_rc_expo, "tuned": tuned.throttle_rc_expo,
+                                 "change_pct": _pct_change(original.throttle_rc_expo, tuned.throttle_rc_expo)},
+        }
 
         return report
 

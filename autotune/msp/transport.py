@@ -275,16 +275,27 @@ class MSPTransport(QObject):
     @staticmethod
     def _parse_status(payload: bytes) -> dict:
         import struct
-        items = struct.unpack("<HHHIBBH", payload[:12])
-        return {
-            "cycle_time": items[0],
-            "i2c_errors": items[1],
-            "sensor_status": items[2],
-            "flight_mode_flags": items[3],
-            "pid_profile_index": items[4],
-            "system_load": items[5],
-            "gyro_cycle_time": items[6] if len(items) > 6 else 0,
-        }
+        if len(payload) >= 13:
+            items = struct.unpack("<HHHIBH", payload[:13])
+            return {
+                "cycle_time": items[0],
+                "i2c_errors": items[1],
+                "sensor_status": items[2],
+                "flight_mode_flags": items[3],
+                "system_load": items[4],
+                "gyro_cycle_time": items[5],
+            }
+        elif len(payload) >= 12:
+            items = struct.unpack("<HHHIBB", payload[:12])
+            return {
+                "cycle_time": items[0],
+                "i2c_errors": items[1],
+                "sensor_status": items[2],
+                "flight_mode_flags": items[3],
+                "system_load": items[4],
+                "gyro_cycle_time": 0,
+            }
+        return {}
 
     @staticmethod
     def _parse_imu(payload: bytes) -> dict:

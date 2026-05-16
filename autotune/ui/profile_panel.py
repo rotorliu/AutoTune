@@ -11,6 +11,7 @@ from autotune.utils.profile_manager import ProfileManager
 class ProfilePanel(QWidget):
     pid_load_request = Signal(dict)
     rate_load_request = Signal(dict)
+    filter_load_request = Signal(dict)
 
     def __init__(self, controller):
         super().__init__()
@@ -134,6 +135,9 @@ class ProfilePanel(QWidget):
 
         self.pid_load_request.emit(data.get("pid", {}))
         self.rate_load_request.emit(data.get("rate", {}))
+        filter_data = data.get("filter", {})
+        if filter_data:
+            self.filter_load_request.emit(filter_data)
 
     def _delete_selected(self):
         item = self.profile_list.currentItem()
@@ -188,6 +192,9 @@ class ProfilePanel(QWidget):
 
         self.pid_load_request.emit(pid)
         self.rate_load_request.emit(rate)
+        filter_data = data.get("filter", {})
+        if filter_data:
+            self.filter_load_request.emit(filter_data)
 
         self._refresh_list()
         QMessageBox.information(self, "导入成功", f"已导入方案: {name}")

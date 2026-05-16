@@ -35,6 +35,24 @@ class FilterConfig:
             "yaw_lowpass_hz": self.yaw_lowpass_hz,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> FilterConfig:
+        config = cls()
+        config.gyro_lowpass_hz = data.get("gyro_lowpass_hz", config.gyro_lowpass_hz)
+        config.gyro_lowpass2_hz = data.get("gyro_lowpass2_hz", config.gyro_lowpass2_hz)
+        config.gyro_lowpass_type = data.get("gyro_lowpass_type", config.gyro_lowpass_type)
+        config.gyro_lowpass2_type = data.get("gyro_lowpass2_type", config.gyro_lowpass2_type)
+        config.gyro_notch_hz = data.get("gyro_notch_hz", config.gyro_notch_hz)
+        config.gyro_notch_cutoff = data.get("gyro_notch_cutoff", config.gyro_notch_cutoff)
+        config.dterm_lowpass_hz = data.get("dterm_lowpass_hz", config.dterm_lowpass_hz)
+        config.dterm_lowpass2_hz = data.get("dterm_lowpass2_hz", config.dterm_lowpass2_hz)
+        config.dterm_lowpass_type = data.get("dterm_lowpass_type", config.dterm_lowpass_type)
+        config.dterm_lowpass2_type = data.get("dterm_lowpass2_type", config.dterm_lowpass2_type)
+        config.dterm_notch_hz = data.get("dterm_notch_hz", config.dterm_notch_hz)
+        config.dterm_notch_cutoff = data.get("dterm_notch_cutoff", config.dterm_notch_cutoff)
+        config.yaw_lowpass_hz = data.get("yaw_lowpass_hz", config.yaw_lowpass_hz)
+        return config
+
 
 class FCInfo:
     def __init__(self):
