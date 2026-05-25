@@ -185,3 +185,112 @@ def analyze_gyro_data(
         result["energy_high_pct"] = 0
 
     return result
+
+
+# ---- Welch Transfer Function Estimation (inspired by Betaflight Autotune) ----
+
+
+def welch_transfer_function(
+    input_signal: np.ndarray,
+    output_signal: np.ndarray,
+    sample_rate: float,
+    segment_size: int = 1024,
+    overlap: float = 0.5,
+) -> dict:
+    """Estimate closed-loop transfer function H(f) = Sxy(f) / Sxx(f) using Welch's
+    averaged periodogram method with Hanning window.
+
+    Returns a dict with keys: 'freq', 'magnitude_db', 'phase_deg', 'coherence',
+    'sxx', 'sxy', 'syy'.
+    """
+    result = {
+        "freq": np.array([]),
+        "magnitude_db": np.array([]),
+        "phase_deg": np.array([]),
+        "coherence": np.array([]),
+        "sxx": np.array([]),
+        "sxy": np.array([]),
+        "syy": np.array([]),
+    }
+
+    n = len(input_signal)
+    if n < segment_size or len(output_signal) < segment_size:
+        return result
+
+    step = int(segment_size * (1 - overlap))
+    if step < 1:
+        step = 1
+
+    window = np.hanning(segment_size)
+    n_segments = max(1, (n - segment_size) // step + 1)
+
+    freq = np.fft.rfftfreq(segment_size, d=1.0 / sample_rate)
+    sxx_accum = np.zeros(len(freq), dtype=np.float64)
+    syy_accum = np.zeros(len(freq), dtype=np.float64)
+    sxy_accum = np.zeros(len(freq), dtype=np.complex128)
+
+    for i in range(n_segments):
+        start = i * step
+        end = start + segment_size
+        x_seg = input_signal[start:end] - np.mean(input_signal[start:end])
+        y_seg = output_signal[start:end] - np.mean(output_signal[start:end])
+
+        xw = x_seg * window
+        yw = y_seg * window
+
+        xf = np.fft.rfft(xw)
+        yf = np.fft.rfft(yw)
+
+        sxx_accum += np.abs(xf) ** 2
+        syy_accum += np.abs(yf) ** 2
+        sxy_accum += np.conj(xf) * yf
+
+    win_power = np.sum(window ** 2) / segment_size
+    sxx_accum /= (n_segments * win_power)
+    syy_accum /= (n_segments * win_power)
+    sxy_accum /= (n_segments * win_power)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tf_est = sxy_accum / sxx_accum
+        coherence = np.abs(sxy_accum) ** 2 / (sxx_accum * syy_accum)
+
+    magnitude = np.abs(tf_est)
+    magnitude_db = 20 * np.log10(magnitude, where=magnitude > 0)
+    magnitude_db = np.where(magnitude > 0, magnitude_db, -80.0)
+    phase_deg = np.angle(tf_est, deg=True)
+
+    result["freq"] = freq
+    result["magnitude_db"] = magnitude_db
+    result["phase_deg"] = phase_deg
+    result["coherence"] = np.nan_to_num(coherence, nan=0.0)
+    result["sxx"] = sxx_accum
+    result["sxy"] = sxy_accum
+    result["syy"] = syy_accum
+
+    return result
+
+
+def sensitivity_from_transfer(
+    tf_magnitude: np.ndarray,
+    tf_phase_deg: np.ndarray,
+) -> np.ndarray:
+    """Compute sensitivity function S(f) = 1 - T(f) from closed-loop transfer T(f).
+    Higher |S| indicates worse disturbance rejection at that frequency.
+    """
+    tf_complex = tf_magnitude * np.exp(1j * np.deg2rad(tf_phase_deg))
+    s_complex = 1.0 - tf_complex
+    return np.abs(s_complex)
+
+
+def compute_mean_coherence(
+    coherence: np.ndarray,
+    freq: np.ndarray,
+    freq_range: Tuple[float, float] = (5.0, 100.0),
+) -> float:
+    """Average coherence within a frequency band — used as data quality metric.
+    > 0.7 = excellent, 0.3-0.7 = acceptable, < 0.3 = poor.
+    """
+    mask = (freq >= freq_range[0]) & (freq <= freq_range[1])
+    if not np.any(mask):
+        return 0.0
+    return float(np.mean(coherence[mask]))

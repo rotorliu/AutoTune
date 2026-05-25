@@ -5,7 +5,11 @@ import numpy as np
 from autotune.fc.pid import PIDProfile, PIDAxis, PIDAdvancedAxis
 from autotune.analysis.step_response import analyze_step_response, extract_step_response
 from autotune.analysis.signal_processing import analyze_gyro_data
-from autotune.analysis.metrics import evaluate_flight_quality
+from autotune.analysis.metrics import (
+    evaluate_flight_quality,
+    analyze_frequency_domain,
+    FrequencyDomainMetrics,
+)
 from autotune.tuning.rules import RuleEngine
 from autotune.tuning.flight_scenes import FlightScene, SceneTuningPreferences, get_scene_preferences
 
@@ -51,6 +55,8 @@ class PIDTuner:
         else:
             self._max_change_pct = base_change_limit
         self._progress_callback: Optional[Callable] = None
+        self._freq_metrics_per_axis: dict[str, FrequencyDomainMetrics] = {}
+        self._data_quality: dict[str, str] = {}
 
     def set_progress_callback(self, callback: Callable):
         self._progress_callback = callback
@@ -65,6 +71,8 @@ class PIDTuner:
         initial_profile: PIDProfile,
     ) -> PIDProfile:
         tuned = initial_profile.clone()
+        self._freq_metrics_per_axis: dict[str, FrequencyDomainMetrics] = {}
+        self._data_quality: dict[str, str] = {}
 
         gyro_x = data.get("gyro_x", np.array([]))
         gyro_y = data.get("gyro_y", np.array([]))
@@ -76,6 +84,9 @@ class PIDTuner:
         motor_1 = data.get("motor_1", np.array([]))
         motor_2 = data.get("motor_2", np.array([]))
         motor_3 = data.get("motor_3", np.array([]))
+
+        # Global data quality check
+        self._data_quality["overall"] = self._check_data_quality(data)
 
         for axis_idx, (axis_name, gyro_key, sp_key) in enumerate(
             zip(self.AXES, self.GYRO_KEYS, self.SETPOINT_KEYS)
@@ -97,6 +108,14 @@ class PIDTuner:
             gyro_analysis = analyze_gyro_data(gyro, self.sample_rate)
             step_metrics = analyze_step_response(setpoint, gyro, sample_rate=self.sample_rate)
 
+            # Frequency-domain analysis (inspired by Betaflight Autotune)
+            freq_metrics = analyze_frequency_domain(setpoint, gyro, self.sample_rate)
+            self._freq_metrics_per_axis[axis_name] = freq_metrics
+            self._data_quality[axis_name] = freq_metrics.coherence_quality
+            logger.info(
+                f"[{axis_name}] Freq Analysis: {freq_metrics}"
+            )
+
             quality = evaluate_flight_quality(
                 gyro_x, gyro_y, gyro_z,
                 motor_0, motor_1, motor_2, motor_3,
@@ -105,7 +124,8 @@ class PIDTuner:
             )
 
             new_pid, new_adv = self._tune_single_axis(
-                axis_pid, axis_adv, gyro_analysis, step_metrics, quality, axis_name,
+                axis_pid, axis_adv, gyro_analysis, step_metrics, quality,
+                freq_metrics, axis_name,
             )
 
             tuned_axis = tuned.get_axis(axis_idx)
@@ -125,6 +145,18 @@ class PIDTuner:
 
         return tuned
 
+    def _check_data_quality(self, data: dict[str, np.ndarray]) -> str:
+        """Validate that the flight data is suitable for tuning."""
+        gyro_keys = ["gyro_x", "gyro_y", "gyro_z"]
+        total = sum(len(data.get(k, [])) for k in gyro_keys)
+        if total < 30:
+            return "insufficient"
+        # Check for static/tiny-variance data (likely not real flight)
+        variances = [np.var(data.get(k, np.zeros(1))) for k in gyro_keys]
+        if all(v < 1.0 for v in variances):
+            return "insufficient"
+        return "ok"
+
     def _tune_single_axis(
         self,
         current_pid: PIDAxis,
@@ -132,6 +164,7 @@ class PIDTuner:
         gyro_analysis: dict,
         step_metrics,
         quality,
+        freq_metrics: FrequencyDomainMetrics,
         axis_name: str,
     ):
         new_pid = current_pid.clone()
@@ -156,6 +189,14 @@ class PIDTuner:
                 "energy_high_pct": gyro_analysis.get("energy_high_pct", 0),
                 "energy_low_pct": gyro_analysis.get("energy_low_pct", 0),
                 "energy_mid_pct": gyro_analysis.get("energy_mid_pct", 0),
+                # Frequency-domain metrics (inspired by Betaflight)
+                "bandwidth_hz": freq_metrics.bandwidth_hz,
+                "phase_margin_deg": freq_metrics.phase_margin_deg,
+                "resonant_peak_db": freq_metrics.resonant_peak_db,
+                "resonant_freq_hz": freq_metrics.resonant_freq_hz,
+                "noise_floor_hz": freq_metrics.noise_floor_hz,
+                "sensitivity_peak_db": freq_metrics.sensitivity_peak_db,
+                "coherence_quality": freq_metrics.coherence_quality,
                 "new_p": new_pid.p,
                 "new_i": new_pid.i,
                 "new_d": new_pid.d,
@@ -223,7 +264,22 @@ class PIDTuner:
         original: PIDProfile,
         tuned: PIDProfile,
     ) -> dict:
-        report = {"axes": {}}
+        report = {"axes": {}, "frequency_analysis": {}, "quality_warnings": []}
+
+        # Include data quality assessment
+        for axis_key, quality_label in self._data_quality.items():
+            if quality_label == "poor":
+                report["quality_warnings"].append(
+                    f"{axis_key}: poor coherence — tuning may be unreliable"
+                )
+            elif quality_label == "insufficient":
+                report["quality_warnings"].append(
+                    f"{axis_key}: insufficient data"
+                )
+
+        # Include frequency-domain metrics
+        for axis_name, fm in self._freq_metrics_per_axis.items():
+            report["frequency_analysis"][axis_name] = fm.to_dict()
 
         param_keys = [
             ("P", "p"),

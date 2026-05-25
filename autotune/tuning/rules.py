@@ -82,6 +82,14 @@ class RuleEngine:
         ))
 
         engine.add_rule(TuningRule(
+            name="resonance_safety_rollback",
+            description="Coordinated safety rollback when resonant peak exceeds threshold",
+            condition_fn=lambda ctx: ctx.get("resonant_peak_db", 0) > 3.0,
+            action_fn=_resonance_safety_rollback,
+            priority=11,
+        ))
+
+        engine.add_rule(TuningRule(
             name="high_freq_noise",
             description="Increase D and D_Min when high frequency noise detected",
             condition_fn=lambda ctx: ctx.get("energy_high_pct", 0) > 30.0,
@@ -170,6 +178,12 @@ def _increase_p(context: dict, p_factor: float = 1.0):
 
 
 def _reduce_p_or_increase_d(context: dict, d_factor: float = 1.0):
+    """P-D coupling: predict phase margin impact before choosing action.
+
+    Inspired by Betaflight's predicted-D approach — if the current phase margin is
+    already low, reducing P (which raises crossover frequency and erodes PM further)
+    may not be the right choice; instead increase D to add damping.
+    """
     p = context.get("current_p", 40.0)
     if p < 0.5:
         p = 40.0
@@ -177,11 +191,52 @@ def _reduce_p_or_increase_d(context: dict, d_factor: float = 1.0):
     if d < 0.5:
         d = 25.0
     overshoot = context.get("overshoot_pct", 0)
+    phase_margin = context.get("phase_margin_deg", 90.0)
 
+    # Strong overshoot + strong D dominance: classic case for reducing P
     if overshoot > 25.0 or d > p * 0.6:
         _reduce_p(context)
+        # Predict: reduced P → lower gain → crossover shifts, consider D adjustment
+        predicted_pm = phase_margin * 0.85  # conservative estimate for P reduction
+        if predicted_pm < 30.0 and d < p * 0.4:
+            _increase_d(context, d_factor=d_factor)
+    # Moderate overshoot but phase margin is already stretched: add D instead
+    elif phase_margin < 35.0:
+        _increase_d(context, d_factor=d_factor)
     else:
         _increase_d(context, d_factor=d_factor)
+
+
+def _resonance_safety_rollback(context: dict):
+    """Coordinated safety rollback when resonant peak detected (inspired by Betaflight).
+
+    When the closed-loop bode shows a resonance > 6dB, roll back P/I, D and FF
+    simultaneously.  For 3-6dB, apply a lighter touch.
+    """
+    peak_db = context.get("resonant_peak_db", 0)
+    if "applied_rules" not in context:
+        context["applied_rules"] = []
+
+    if peak_db > 6.0:
+        # Severe resonance: aggressive rollback
+        _reduce_p(context, p_factor=0.75)
+        if context.get("current_i", 60.0) > 10.0:
+            _reduce_i(context, i_factor=0.85)
+        _reduce_d(context, d_factor=0.8)
+        current_ff = context.get("current_ff", 0)
+        if current_ff > 50:
+            context["new_ff"] = current_ff * 0.8
+            context["applied_rules"].append(
+                f"Resonance severe ({peak_db:.1f}dB): Reduce FF {current_ff:.0f} -> {context['new_ff']:.0f}"
+            )
+    else:
+        # Mild resonance: light touch
+        _reduce_p(context, p_factor=0.9)
+        _reduce_d(context, d_factor=0.95)
+
+    context["applied_rules"].append(
+        f"Resonance rollback ({peak_db:.1f}dB): P/D/I/FF coordinated reduction"
+    )
 
 
 def _increase_d(context: dict, d_factor: float = 1.0):

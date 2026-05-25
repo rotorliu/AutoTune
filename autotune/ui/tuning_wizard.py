@@ -20,7 +20,7 @@ from autotune.tuning.flight_scenes import FlightScene, get_all_scenes, get_scene
 
 class TuningWorker(QThread):
     progress = Signal(str, int)
-    finished = Signal(dict, dict, dict)
+    finished = Signal(dict, dict, dict, dict)
     error = Signal(str)
 
     def __init__(self, data, controller, tune_pid=True, tune_rate=True, tune_filter=True, conservative=True, scene=None):
@@ -38,12 +38,14 @@ class TuningWorker(QThread):
             result_pid = None
             result_rate = None
             result_filter = None
+            freq_report = {}
 
             if self.tune_pid:
                 self.progress.emit("正在分析飞行数据进行 PID 调优...", 10)
                 tuner = PIDTuner(conservative=self.conservative, scene=self.scene)
                 tuner.set_progress_callback(lambda msg, pct: self.progress.emit(msg, pct))
                 result_pid = tuner.tune(self.data, self.controller.pid_profile)
+                freq_report = tuner.compute_pid_report(self.controller.pid_profile, result_pid)
                 self.progress.emit("PID 调优完成", 40)
 
             if self.tune_rate:
@@ -67,6 +69,7 @@ class TuningWorker(QThread):
                 result_pid.to_dict() if result_pid else None,
                 result_rate.to_dict() if result_rate else None,
                 result_filter.to_dict() if result_filter else None,
+                freq_report,
             )
 
         except Exception as e:
@@ -368,7 +371,7 @@ class TuningWizard(QWidget):
         self.progress_bar.setValue(percent)
         self._log(message)
 
-    def _on_finished(self, pid_result, rate_result, filter_result):
+    def _on_finished(self, pid_result, rate_result, filter_result, freq_report=None):
         self.start_btn.setEnabled(True)
         self.apply_btn.setEnabled(True)
 
@@ -377,6 +380,30 @@ class TuningWizard(QWidget):
         self._tuned_pid = pid_result
         self._tuned_rate = rate_result
         self._tuned_filter = filter_result
+
+        # Display quality warnings
+        if freq_report and freq_report.get("quality_warnings"):
+            result_text += "--- 数据质量警告 ---\n"
+            for warning in freq_report["quality_warnings"]:
+                result_text += f"⚠  {warning}\n"
+            result_text += "\n"
+
+        # Display frequency-domain analysis summary
+        if freq_report and freq_report.get("frequency_analysis"):
+            result_text += "--- 频域分析 (闭环传递函数估计) ---\n"
+            for axis_name, fm in freq_report["frequency_analysis"].items():
+                bw = fm.get("bandwidth_hz", 0)
+                pm = fm.get("phase_margin_deg", 0)
+                res = fm.get("resonant_peak_db", 0)
+                rfreq = fm.get("resonant_freq_hz", 0)
+                coh_quality = fm.get("coherence_quality", "unknown")
+                sens = fm.get("sensitivity_peak_db", 0)
+                result_text += (
+                    f"{axis_name}: BW={bw:.1f}Hz, PM={pm:.1f}°, "
+                    f"Resonance={res:.1f}dB@{rfreq:.1f}Hz, "
+                    f"Coh={coh_quality}, SensPeak={sens:.1f}dB\n"
+                )
+            result_text += "\n"
 
         if pid_result and self.tune_pid_cb.isChecked():
             result_text += "--- PID 参数 ---\n"
